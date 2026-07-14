@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ConstructionSIM — Interactive Demo</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #161513; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useEffect } = React;
+
+// ─────────────────────────────────────────────────────────────
+// ConstructionSIM — recruiter-facing demo build
+//
+// This is NOT the real product. It reuses the real UI/UX design but
+// replaces the live AI-graded engine with a short, fully scripted
+// playthrough (see SCRIPT below) so it can run entirely client-side —
+// no backend, no API keys, no login, safe to host publicly.
+//
+// The real product sends structured game state to a FastAPI backend
+// that calls Claude for scenario generation, decision grading, and
+// recovery planning — see the case-study README for that architecture.
+// ─────────────────────────────────────────────────────────────
+
+const T = {
+  ink: "#161513", panel: "#201E1B", panel2: "#28251F", edge: "#3A362E",
+  paper: "#F2EEE6", paperEdge: "#C9C2B2", inkOnPaper: "#26231D",
+  gold: "#D0A958", goldDim: "#9A7F42", orange: "#E0602F",
+  red: "#C94333", green: "#7FB57F", gray: "#8E8A84", grayLight: "#B9B4AA",
+};
+
+const ORGS = [
+  ["Owner / Developer", "You carry the pro forma. Cost, pace, and lease-up risk are yours."],
+  ["General Contractor", "Contract, schedule, and means & methods. You own delivery."],
+  ["Architect", "Design intent, CA, and liability. The drawings have your stamp."],
+];
+
+const ROLES_BY_ORG = {
+  "Owner / Developer": [["Owner Project Manager", "Day-to-day owner-side delivery and consultant management."]],
+  "General Contractor": [["Project Manager", "Budget, schedule, contracts, and the owner relationship."]],
+  "Architect": [["Project Architect", "Owns the documents and design decisions through CA."]],
+};
+
+const PRESETS = [
+  ["Multifamily High-Rise", "24-story post-tension tower, 310 units", 142, 30, "GMP"],
+  ["Hospital Tower", "8-story patient tower, heavy AHJ oversight", 260, 36, "CMAR"],
+  ["Hotel Renovation", "Occupied 400-key renovation, phased", 58, 18, "Lump Sum"],
+];
+
+const PHASES = ["Preconstruction", "Design Coordination", "Procurement & Buyout", "MEP Rough-In", "Closeout & Turnover"];
+const METRIC_DEFS = [
+  ["budget", "Budget"], ["schedule", "Schedule"], ["risk", "Risk Control"],
+  ["morale", "Team Morale"], ["owner", "Stakeholder Sat."], ["safety", "Safety"], ["quality", "Quality"],
+];
+const BASELINE = 70;
+
+const fmtM = (n) =>
+  n >= 1000 ? `$${(n / 1000).toFixed(2)}B` : n >= 1 ? `$${n.toFixed(n < 10 ? 1 : 0)}M` : `$${Math.round(n * 1000)}K`;
+
+function perfData(project, metrics, params) {
+  const contM = project.budgetM * (params.contingencyPct / 100);
+  const bDev = Math.max(0, BASELINE - metrics.budget) / BASELINE;
+  const sDev = Math.max(0, BASELINE - metrics.schedule) / BASELINE;
+  const overrunM = project.budgetM * bDev * 0.12;
+  const delayDays = Math.round(project.durationMo * 30.4 * sDev * 0.16);
+  return {
+    cpi: (metrics.budget / BASELINE).toFixed(2),
+    spi: (metrics.schedule / BASELINE).toFixed(2),
+    contM, overrunM, contRemainM: contM - overrunM,
+    floatDays: params.floatDays, delayDays, floatRemain: params.floatDays - delayDays,
+  };
+}
+
+// ── Scripted playthrough — no live AI, same 4-decision shape as the real app ──
+const SCRIPT = [
+  {
+    phaseIdx: 0, docType: "RFI", refNumber: "RFI-014", from: "Structural Engineer of Record",
+    title: "Foundation redesign conflicts with tower crane pad",
+    situation: "The EOR's revised footing layout for the north core now overlaps the tower crane's mat foundation. The crane erector needs an answer within 48 hours or the mobilization date slips.",
+    options: [
+      { label: "A", text: "Hold the crane date — direct the EOR to redesign around the existing mat.", score: 88, grade: "A", outcome: "The EOR resequences the footing pour; crane mobilization holds.", feedback: "Protecting a critical-path milestone before it becomes a claim is the right instinct — you paid for it in coordination time, not schedule.", bestPractice: "Critical-path equipment dates get protected first; redesign scope flexes around them, not the other way around.", deltas: { budget: -2, schedule: -4, risk: 5, morale: 2, owner: 3, safety: 0, quality: 3 } },
+      { label: "B", text: "Relocate the crane pad and absorb the mobilization delay.", score: 64, grade: "C", outcome: "The erector re-engineers the pad location; mobilization slips 9 days.", feedback: "Workable, but you let a design change dictate the schedule instead of protecting the critical path — a preventable slip.", bestPractice: "Critical-path equipment dates get protected first; redesign scope flexes around them, not the other way around.", deltas: { budget: -3, schedule: -8, risk: 2, morale: 0, owner: -2, safety: 0, quality: 2 } },
+      { label: "C", text: "Approve the overlap and have the crane erector work around it in the field.", score: 41, grade: "D", outcome: "The erector flags a safety exception; the AHJ later requires a stop-work review.", feedback: "Deferring a real conflict to the field instead of resolving it on paper is how RFIs turn into incident reports.", bestPractice: "Geometric conflicts get resolved in design, not worked around in the field.", deltas: { budget: -4, schedule: -6, risk: -8, morale: -3, owner: -6, safety: -6, quality: -4 } },
+    ],
+  },
+  {
+    phaseIdx: 1, docType: "Change Order Request", refNumber: "COR-027", from: "Owner's Representative",
+    title: "MEP coordination clash triggers a $340K change order request",
+    situation: "Trade coordination surfaces a hard clash between ductwork and a structural beam on Level 6. The mechanical sub submits a $340K COR and a 2-week float request before releasing shop drawings.",
+    options: [
+      { label: "A", text: "Push back — request a no-cost resequencing option before pricing any COR.", score: 82, grade: "A", outcome: "The sub finds a reroute with no beam modification; COR drops to $60K.", feedback: "Asking for the cheaper fix before accepting the expensive one is exactly the discipline that protects contingency.", bestPractice: "Every COR gets a no-cost-alternative pass before it's priced against contingency.", deltas: { budget: 3, schedule: -3, risk: 3, morale: 1, owner: 2, safety: 0, quality: 1 } },
+      { label: "B", text: "Approve the full COR and float request to keep the trade moving.", score: 58, grade: "C", outcome: "Shop drawings release on time; contingency absorbs the full $340K.", feedback: "Keeping momentum has value, but a six-figure COR should get at least one round of pushback before it's approved outright.", bestPractice: "Every COR gets a no-cost-alternative pass before it's priced against contingency.", deltas: { budget: -8, schedule: -1, risk: 0, morale: 2, owner: 1, safety: 0, quality: 0 } },
+      { label: "C", text: "Deny the COR and hold the sub to the original drawings.", score: 47, grade: "D", outcome: "The sub stops work on that scope pending a formal dispute; float request becomes a real delay.", feedback: "A real physical clash doesn't go away because you deny the paperwork — it just resurfaces as a claim with less goodwill.", bestPractice: "Verified physical conflicts need a resolution path, not a denial.", deltas: { budget: 1, schedule: -9, risk: -3, morale: -4, owner: -3, safety: 0, quality: -1 } },
+    ],
+  },
+  {
+    phaseIdx: 2, docType: "Field Report", refNumber: "DFR-058", from: "Superintendent",
+    title: "Switchgear delivery slips 6 weeks — MEP rough-in sequencing at risk",
+    situation: "The utility's long-lead switchgear now shows a 6-week slip against the original delivery date. Rough-in for three floors is sequenced directly behind it, and the schedule has no float allocated for this trade.",
+    options: [
+      { label: "A", text: "Resequence rough-in to work ahead on unaffected floors while switchgear catches up.", score: 79, grade: "B", outcome: "Crews shift to floors 4-6; only a partial slip carries through to closeout.", feedback: "Reshuffling the sequence to keep crews productive is the standard first move — it doesn't erase the slip, but it limits it.", bestPractice: "Long-lead slips get absorbed by resequencing unaffected scope before they're accepted as a straight schedule hit.", deltas: { budget: -3, schedule: -10, risk: 1, morale: 1, owner: 0, safety: 0, quality: 1 } },
+      { label: "B", text: "Hold the original sequence and absorb the full slip.", score: 55, grade: "C", outcome: "Rough-in stalls on all three floors until switchgear arrives.", feedback: "Simple to execute, but it converts a vendor delay directly into your delay with no attempt to mitigate it first.", bestPractice: "Long-lead slips get absorbed by resequencing unaffected scope before they're accepted as a straight schedule hit.", deltas: { budget: -2, schedule: -14, risk: -1, morale: -2, owner: -3, safety: 0, quality: 0 } },
+      { label: "C", text: "Expedite freight on the switchgear at a premium to protect the date.", score: 68, grade: "B", outcome: "Delivery slip cut to 2 weeks at a $95K freight premium.", feedback: "A legitimate option when the date truly can't move, though it should usually follow — not replace — a resequencing pass.", bestPractice: "Long-lead slips get absorbed by resequencing unaffected scope before they're accepted as a straight schedule hit.", deltas: { budget: -9, schedule: -6, risk: 2, morale: 0, owner: 2, safety: 0, quality: 0 } },
+    ],
+  },
+  {
+    phaseIdx: 3, docType: "Incident Report", refNumber: "SIR-009", from: "Safety Manager",
+    title: "Near-miss on the hoist — crew reports a missed daily inspection",
+    situation: "A near-miss on the material hoist reveals the daily pre-use inspection log has a 3-day gap. No one was hurt, but the crew foreman wants to keep working through it verbally rather than stopping to re-certify.",
+    options: [
+      { label: "A", text: "Stop hoist operations until a full re-inspection and log audit is complete.", score: 91, grade: "A", outcome: "Hoist is down for one shift; re-inspection turns up a worn cable clamp.", feedback: "A near-miss with a documentation gap is exactly the signal a stop-work protocol exists for — this one likely prevented a real incident.", bestPractice: "Any safety-critical equipment with a documentation gap gets re-verified before it's trusted again, no exceptions.", deltas: { budget: -1, schedule: -2, risk: 6, morale: 3, owner: 1, safety: 10, quality: 1 } },
+      { label: "B", text: "Log the gap as an admin error and let the crew keep working.", score: 22, grade: "F", outcome: "The hoist keeps running; the worn cable clamp isn't found until a follow-up audit weeks later.", feedback: "Treating a safety documentation gap as paperwork instead of a signal is the single highest-risk call in this playthrough.", bestPractice: "Any safety-critical equipment with a documentation gap gets re-verified before it's trusted again, no exceptions.", deltas: { budget: 1, schedule: 1, risk: -10, morale: -5, owner: -2, safety: -14, quality: 0 } },
+      { label: "C", text: "Have the foreman self-certify verbally and log it after the shift.", score: 48, grade: "D", outcome: "Work continues; the written re-certification happens a day late.", feedback: "A verbal workaround for a written safety requirement defeats the point of the requirement.", bestPractice: "Any safety-critical equipment with a documentation gap gets re-verified before it's trusted again, no exceptions.", deltas: { budget: 0, schedule: 0, risk: -4, morale: -1, owner: -1, safety: -6, quality: 0 } },
+    ],
+  },
+];
+
+const RECOVERY_OPTIONS = [
+  { name: "Resequence + weekend crews", action: "Shift unaffected scope forward and add weekend shifts on the critical path for 3 weeks.", tradeoff: "Recovers most of the float but adds ~$45K in premium labor.", effectiveness: 78, deltas: { budget: -4, schedule: 12, risk: 1, morale: -1, owner: 2, safety: 0, quality: 0 } },
+  { name: "Owner-approved schedule reset", action: "Formally reset the milestone dates with the owner and communicate the revised turnover date.", tradeoff: "No premium cost, but stakeholder confidence takes a visible hit.", effectiveness: 60, deltas: { budget: 1, schedule: 6, risk: 0, morale: 1, owner: -6, safety: 0, quality: 0 } },
+  { name: "Scope deferral to a punch-list phase", action: "Push non-critical finishes to a post-turnover punch phase to protect the core turnover date.", tradeoff: "Protects the headline date but risks owner perception of an incomplete handover.", effectiveness: 66, deltas: { budget: 2, schedule: 9, risk: -1, morale: 0, owner: -3, safety: 0, quality: -3 } },
+];
+
+function finalReportFor(avgScore, failed) {
+  if (failed) {
+    return {
+      headline: "The project didn't survive this run.",
+      summary: "A safety-critical signal got treated as paperwork instead of a stop-work trigger, and the project's risk and safety metrics collapsed past the failure floor before the team could recover.",
+      strengths: ["Cost discipline held up reasonably well through the early RFI and change-order events."],
+      growthAreas: ["Safety documentation gaps need a hard stop-work response, every time, regardless of schedule pressure.", "Build in a recovery-plan check earlier, before metrics approach the failure floor."],
+      recommendation: "Run it back and treat every safety near-miss with a documentation gap as an automatic stop-work event.",
+    };
+  }
+  if (avgScore >= 78) {
+    return {
+      headline: "Textbook project leadership under real pressure.",
+      summary: "Every major event — a design conflict, a six-figure change order, a long-lead schedule slip, and a safety near-miss — got resolved with the industry-standard playbook response instead of the easy shortcut.",
+      strengths: ["Protected the critical path instead of letting design changes dictate schedule.", "Pushed back on pricing before accepting a change order at face value.", "Treated a safety documentation gap as a stop-work trigger, not an inconvenience."],
+      growthAreas: ["Consider building contingency reserve earlier when early events run favorably, to buy more room on the next slip."],
+      recommendation: "This is close to a reference playthrough — the main opportunity left is building schedule float earlier instead of spending it as it appears.",
+    };
+  }
+  if (avgScore >= 58) {
+    return {
+      headline: "Solid, survivable delivery — with a few avoidable hits.",
+      summary: "The project reached turnover, but a couple of decisions absorbed schedule or budget hits that a faster, more assertive response would have avoided.",
+      strengths: ["Kept the project moving through every event without a full stop.", "Safety was treated seriously when it mattered most."],
+      growthAreas: ["Push back on change-order pricing before approving it outright.", "Resequence around long-lead delays before accepting the full schedule hit."],
+      recommendation: "Focus the next playthrough on getting ahead of vendor and design conflicts before they become schedule hits.",
+    };
+  }
+  return {
+    headline: "The project reached turnover, but it was closer than it needed to be.",
+    summary: "Several events were resolved with the path of least resistance instead of the response that protects budget, schedule, or safety — the cumulative effect nearly triggered a failure.",
+    strengths: ["The project didn't fail outright — some margin was preserved."],
+    growthAreas: ["Treat six-figure change orders and safety documentation gaps as high-stakes events, not routine ones.", "Use the recovery plan earlier, before metrics approach the failure floor."],
+    recommendation: "Run it back and default to the more conservative option whenever safety or a hard schedule commitment is in play.",
+  };
+}
+
+// ── UI atoms (same visual system as the real product) ──────────
+
+function Bar({ label, value, delta }) {
+  const color = value >= 65 ? T.green : value >= 45 ? T.gold : T.orange;
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, letterSpacing: "0.06em", textTransform: "uppercase", color: T.grayLight }}>
+        <span>{label}</span>
+        <span style={{ color, fontWeight: 600 }}>
+          {value}
+          {delta != null && delta !== 0 && (
+            <span style={{ marginLeft: 6, color: delta > 0 ? T.green : T.orange, fontSize: 12 }}>
+              {delta > 0 ? `▲${delta}` : `▼${Math.abs(delta)}`}
+            </span>
+          )}
+        </span>
+      </div>
+      <div style={{ height: 5, background: "#33302A", borderRadius: 2, overflow: "hidden" }}>
+        <div style={{ width: `${value}%`, height: "100%", background: color, transition: "width 600ms ease" }} />
+      </div>
+    </div>
+  );
+}
+
+function Stamp({ children, color = T.gold }) {
+  return (
+    <span style={{ display: "inline-block", border: `2px solid ${color}`, color, padding: "2px 10px", fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, letterSpacing: "0.12em", transform: "rotate(-2deg)", borderRadius: 2 }}>
+      {children}
+    </span>
+  );
+}
+
+function Btn({ children, onClick, disabled, kind = "gold", style }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      fontFamily: "'Bebas Neue', sans-serif", letterSpacing: "0.1em", fontSize: 18,
+      padding: "10px 22px", cursor: disabled ? "default" : "pointer", borderRadius: 3,
+      border: `1px solid ${kind === "gold" ? T.gold : kind === "danger" ? T.orange : T.edge}`,
+      background: kind === "gold" ? T.gold : kind === "danger" ? T.orange : "transparent",
+      color: kind === "ghost" ? T.grayLight : T.ink,
+      opacity: disabled ? 0.4 : 1, transition: "all 150ms ease", ...style,
+    }}>{children}</button>
+  );
+}
+
+const h2 = { fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, color: T.gold, letterSpacing: "0.1em", margin: "26px 0 10px" };
+const card = (sel) => ({
+  textAlign: "left", padding: "12px 14px", background: sel ? T.panel2 : T.panel,
+  border: `1px solid ${sel ? T.gold : T.edge}`, borderRadius: 3, cursor: "pointer", color: T.grayLight,
+});
+
+function ConstructionSimDemo() {
+  const [screen, setScreen] = useState("intro");
+  const [org, setOrg] = useState(null);
+  const [role, setRole] = useState(null);
+  const [preset, setPreset] = useState(null);
+
+  const params = { contingencyPct: 5, floatDays: 20, failFloor: 25, successTarget: 65 };
+  const project = preset ? { name: preset[0], budgetM: preset[2], durationMo: preset[3], contract: preset[4] } : null;
+
+  const [stepIdx, setStepIdx] = useState(0);
+  const [metrics, setMetrics] = useState({ budget: 70, schedule: 70, risk: 60, morale: 70, owner: 65, safety: 75, quality: 70 });
+  const [history, setHistory] = useState({ budget: [70], schedule: [70] });
+  const [log, setLog] = useState([]);
+  const [debrief, setDebrief] = useState(null);
+  const [recovery, setRecovery] = useState(null);
+  const [recoveryDone, setRecoveryDone] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [failReason, setFailReason] = useState("");
+  const scrollRef = useRef(null);
+
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }, [stepIdx, debrief, recovery]);
+
+  const current = SCRIPT[stepIdx];
+  const avgScore = log.length ? Math.round(log.reduce((a, l) => a + l.score, 0) / log.length) : null;
+  const health = Math.round(METRIC_DEFS.reduce((a, [k]) => a + metrics[k], 0) / METRIC_DEFS.length);
+  const data = project ? perfData(project, metrics, params) : null;
+  const slipping = metrics.budget < 55 || metrics.schedule < 55;
+
+  function applyDeltas(deltas) {
+    const m = { ...metrics };
+    for (const [k] of METRIC_DEFS) m[k] = Math.max(0, Math.min(100, m[k] + (deltas[k] || 0)));
+    return m;
+  }
+
+  function checkFail(m) {
+    for (const [k] of METRIC_DEFS) {
+      if ((k === "budget" || k === "schedule" || k === "safety") && m[k] <= params.failFloor) {
+        return k === "budget" ? "Budget collapse — contingency exhausted, funding pulled"
+          : k === "schedule" ? "Schedule failure — liquidated damages triggered"
+          : "Safety shutdown — project stopped by serious incident record";
+      }
+    }
+    return null;
+  }
+
+  function choose(opt) {
+    const next = applyDeltas(opt.deltas);
+    setMetrics(next);
+    setHistory((h) => ({ budget: [...h.budget, next.budget], schedule: [...h.schedule, next.schedule] }));
+    setLog((l) => [...l, { phaseIdx: current.phaseIdx, docType: current.docType, title: current.title, choice: opt.label, score: opt.score }]);
+    const fr = checkFail(next);
+    if (fr) { setFailed(true); setFailReason(fr); setDebrief({ ...opt, failedNow: true }); return; }
+    setDebrief(opt);
+  }
+
+  function next() {
+    setDebrief(null);
+    if (stepIdx + 1 >= SCRIPT.length) { setScreen("final"); return; }
+    setStepIdx((i) => i + 1);
+  }
+
+  function applyRecovery(opt) {
+    const nextM = applyDeltas(opt.deltas);
+    setMetrics(nextM);
+    setHistory((h) => ({ budget: [...h.budget, nextM.budget], schedule: [...h.schedule, nextM.schedule] }));
+    setLog((l) => [...l, { phaseIdx: current.phaseIdx, docType: "Recovery Plan", title: opt.name, choice: opt.name, score: opt.effectiveness }]);
+    setRecovery(null);
+    setRecoveryDone(true);
+    const fr = checkFail(nextM);
+    const grade = opt.effectiveness >= 75 ? "A" : opt.effectiveness >= 60 ? "B" : "C";
+    if (fr) {
+      setFailed(true); setFailReason(fr);
+      setDebrief({ label: opt.name, score: opt.effectiveness, grade, outcome: opt.action, feedback: opt.tradeoff, bestPractice: "Recovery plans buy back float or contingency — they don't undo a metric that's already crossed the failure floor.", failedNow: true, deltas: opt.deltas });
+    } else {
+      setDebrief({ label: opt.name, score: opt.effectiveness, grade, outcome: `Recovery initiated: ${opt.action}`, feedback: opt.tradeoff, bestPractice: "A recovery plan buys back float or contingency at a cost — the right pick depends on whether cash, schedule, or stakeholder trust is more expendable right now.", deltas: opt.deltas });
+    }
+  }
+
+  function reset() {
+    setScreen("setup"); setStepIdx(0); setDebrief(null); setRecovery(null); setRecoveryDone(false);
+    setFailed(false); setFailReason(""); setLog([]);
+    setMetrics({ budget: 70, schedule: 70, risk: 60, morale: 70, owner: 65, safety: 75, quality: 70 });
+    setHistory({ budget: [70], schedule: [70] });
+  }
+
+  const finalReport = screen === "final" ? finalReportFor(avgScore, failed) : null;
+
+  return (
+    <div style={{ fontFamily: "'Barlow', sans-serif", color: T.grayLight, background: T.ink }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@400;500;600&display=swap');
+        * { box-sizing: border-box; }
+        button:hover:not(:disabled) { filter: brightness(1.12); }
+        .csim-cols { display: grid; grid-template-columns: 1fr 300px; gap: 16px; }
+        .csim-g3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .csim-g2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+        @media (max-width: 880px) { .csim-cols, .csim-g3, .csim-g2 { grid-template-columns: 1fr; } }
+        @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.55 } }
+      `}</style>
+
+      <div style={{ padding: "8px 18px", background: "#20303A", borderBottom: `1px solid #3A5568`, textAlign: "center", fontFamily: "'Barlow Condensed', sans-serif", fontSize: 12.5, letterSpacing: "0.1em", textTransform: "uppercase", color: "#8FC4DB" }}>
+        Recruiter demo · scripted sample playthrough, no live AI calls or backend · <a href="../README.md" style={{ color: "#8FC4DB" }}>read the full case study</a>
+      </div>
+
+      <div style={{ minHeight: "100vh", background: T.ink, padding: 18 }}>
+        <div style={{ border: `1px solid ${T.edge}`, padding: 2 }}>
+          <div style={{ border: `1px solid ${T.edge}`, display: "flex", flexDirection: "column", minHeight: "calc(100vh - 70px)" }}>
+
+            <div style={{ display: "flex", alignItems: "stretch", borderBottom: `1px solid ${T.edge}`, flexWrap: "wrap" }}>
+              <div style={{ padding: "12px 18px", borderRight: `1px solid ${T.edge}` }}>
+                <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 30, letterSpacing: "0.08em", color: T.paper, lineHeight: 1 }}>
+                  CONSTRUCTION<span style={{ color: T.gold }}>SIM</span>
+                </div>
+                <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 12, letterSpacing: "0.22em", textTransform: "uppercase", color: T.gray }}>
+                  A NorthPeak Construction Technologies product
+                </div>
+              </div>
+              {screen === "sim" && (
+                <div style={{ display: "flex", flex: 1, flexWrap: "wrap" }}>
+                  {[["Role", role], ["Project", project?.name], ["Phase", PHASES[current.phaseIdx]]].map(([k, v]) => (
+                    <div key={k} style={{ padding: "10px 16px", borderRight: `1px solid ${T.edge}`, minWidth: 88 }}>
+                      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase", color: T.gray }}>{k}</div>
+                      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 19, color: T.paper, letterSpacing: "0.05em" }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {screen === "intro" && (
+              <div style={{ padding: "60px 22px", maxWidth: 620, margin: "0 auto", width: "100%", textAlign: "center" }}>
+                <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 40, lineHeight: 1.05, color: T.paper, letterSpacing: "0.04em" }}>
+                  YOUR PROJECT. YOUR PLAYBOOK.<br /><span style={{ color: T.gold }}>WITHOUT THE CONSEQUENCES.</span>
+                </div>
+                <p style={{ fontSize: 15, lineHeight: 1.7, marginTop: 14 }}>
+                  In the real product, an AI engine generates realistic field events from your actual project data
+                  and grades every decision against industry best practice and your own company standards. This demo
+                  swaps that live engine for a short, fixed sample playthrough — 4 real construction scenarios,
+                  scored exactly like the live version — so you can try the experience with zero setup.
+                </p>
+                <Btn style={{ marginTop: 24, fontSize: 22, padding: "12px 34px" }} onClick={() => setScreen("setup")}>TRY THE DEMO →</Btn>
+              </div>
+            )}
+
+            {screen === "setup" && (
+              <div style={{ padding: "26px 22px", maxWidth: 900, margin: "0 auto", width: "100%" }}>
+                <div style={h2}>01 — YOUR SEAT AT THE TABLE</div>
+                <div className="csim-g3">
+                  {ORGS.map(([o, d]) => (
+                    <button key={o} onClick={() => { setOrg(o); setRole(null); }} style={card(org === o)}>
+                      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 19, letterSpacing: "0.06em", color: org === o ? T.gold : T.paper }}>{o}</div>
+                      <div style={{ fontSize: 12.5, lineHeight: 1.45, color: T.gray }}>{d}</div>
+                    </button>
+                  ))}
+                </div>
+
+                {org && (
+                  <>
+                    <div style={h2}>02 — YOUR ROLE</div>
+                    <div className="csim-g3">
+                      {ROLES_BY_ORG[org].map(([r, d]) => (
+                        <button key={r} onClick={() => setRole(r)} style={card(role === r)}>
+                          <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, letterSpacing: "0.06em", color: role === r ? T.gold : T.paper }}>{r}</div>
+                          <div style={{ fontSize: 12.5, lineHeight: 1.45, color: T.gray }}>{d}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                <div style={h2}>03 — THE PROJECT</div>
+                <div className="csim-g3">
+                  {PRESETS.map((p) => (
+                    <button key={p[0]} onClick={() => setPreset(p)} style={card(preset?.[0] === p[0])}>
+                      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 19, letterSpacing: "0.06em", color: preset?.[0] === p[0] ? T.gold : T.paper }}>{p[0]}</div>
+                      <div style={{ fontSize: 12.5, color: T.gray }}>{p[1]}</div>
+                      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 12, letterSpacing: "0.1em", color: T.grayLight, marginTop: 4 }}>
+                        {fmtM(p[2])} · {p[3]} mo · {p[4]}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                <div style={{ marginTop: 30, paddingBottom: 20 }}>
+                  <Btn onClick={() => setScreen("sim")} disabled={!org || !role || !preset} style={{ fontSize: 22, padding: "12px 34px" }}>MOBILIZE →</Btn>
+                  {(!org || !role || !preset) && <span style={{ marginLeft: 14, fontSize: 13, color: T.gray }}>Pick your seat, role, and project.</span>}
+                </div>
+              </div>
+            )}
+
+            {screen === "sim" && (
+              <>
+                {!recovery && slipping && !recoveryDone && !debrief && (
+                  <div style={{ padding: "10px 18px", background: "#3A211A", borderBottom: `1px solid ${T.orange}`, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                    <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 19, letterSpacing: "0.1em", color: T.orange, animation: "pulse 1.6s infinite" }}>⚠ PROJECT IN DISTRESS</span>
+                    <span style={{ fontSize: 13, color: T.grayLight }}>Schedule metric has dropped into distress range.</span>
+                    <Btn kind="danger" style={{ fontSize: 15, padding: "6px 16px", marginLeft: "auto" }} onClick={() => setRecovery(RECOVERY_OPTIONS)}>INITIATE RECOVERY PLAN</Btn>
+                  </div>
+                )}
+
+                <div className="csim-cols" style={{ padding: 16, flex: 1 }}>
+                  <div ref={scrollRef}>
+                    {recovery && (
+                      <div style={{ background: T.panel, border: `1px solid ${T.orange}`, borderRadius: 3, padding: 18, marginBottom: 14 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                          <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 24, color: T.orange, letterSpacing: "0.06em" }}>RECOVERY PLAN</div>
+                          <Stamp color={T.orange}>ACTION REQ'D</Stamp>
+                        </div>
+                        <p style={{ fontSize: 14.5, lineHeight: 1.6 }}><span style={{ color: T.gold, fontWeight: 600 }}>Diagnosis: </span>Cumulative schedule pressure from the last several events has pushed the project into distress. Contingency and float are both under strain.</p>
+                        <div style={{ display: "grid", gap: 8 }}>
+                          {recovery.map((o, i) => (
+                            <button key={i} onClick={() => applyRecovery(o)} style={{
+                              textAlign: "left", padding: "12px 14px", background: T.panel2, border: `1px solid ${T.edge}`,
+                              borderLeft: `4px solid ${T.orange}`, borderRadius: 2, cursor: "pointer", color: T.grayLight,
+                            }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap" }}>
+                                <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, letterSpacing: "0.06em", color: T.paper }}>{o.name}</span>
+                                <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, color: T.gold }}>EFFECTIVENESS {o.effectiveness}/100</span>
+                              </div>
+                              <div style={{ fontSize: 13.5, marginTop: 3 }}>{o.action}</div>
+                              <div style={{ fontSize: 12.5, color: T.orange, marginTop: 3 }}>Trade-off: {o.tradeoff}</div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {!recovery && !debrief && (
+                      <div style={{ background: T.paper, color: T.inkOnPaper, borderRadius: 3, border: `1px solid ${T.paperEdge}`, boxShadow: "0 8px 24px rgba(0,0,0,0.45)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 18px", borderBottom: `2px solid ${T.inkOnPaper}`, gap: 10 }}>
+                          <div>
+                            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", color: "#6B6558" }}>
+                              {current.refNumber} · From {current.from}
+                            </div>
+                            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 27, letterSpacing: "0.04em", lineHeight: 1.05 }}>{current.title}</div>
+                          </div>
+                          <Stamp color={T.orange}>{current.docType}</Stamp>
+                        </div>
+                        <div style={{ padding: "16px 18px", fontSize: 15, lineHeight: 1.65 }}>{current.situation}</div>
+                        <div style={{ padding: "0 18px 18px" }}>
+                          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, letterSpacing: "0.18em", textTransform: "uppercase", color: "#6B6558", margin: "4px 0 8px" }}>
+                            Your move, {role}
+                          </div>
+                          <div style={{ display: "grid", gap: 8 }}>
+                            {current.options.map((o, i) => (
+                              <button key={i} onClick={() => choose(o)} style={{
+                                textAlign: "left", padding: "10px 14px", background: "#EAE4D6", border: `1px solid ${T.paperEdge}`,
+                                borderLeft: `4px solid ${T.gold}`, borderRadius: 2, cursor: "pointer", color: T.inkOnPaper,
+                              }}>
+                                <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 17, letterSpacing: "0.06em", marginRight: 8 }}>{o.label}</span>
+                                <span style={{ fontSize: 13.5 }}>{o.text}</span>
+                              </button>
+                            ))}
+                          </div>
+                          <div style={{ marginTop: 12, fontSize: 12.5, color: T.gray, fontStyle: "italic" }}>
+                            The live product also grades a free-text response you write yourself — disabled in this
+                            scripted demo since there's no live AI behind it here.
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {debrief && (
+                      <div style={{ background: T.panel, border: `1px solid ${debrief.failedNow ? T.red : T.edge}`, borderRadius: 3, padding: 18 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
+                          <div>
+                            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", color: T.gray }}>
+                              Decision review · {debrief.label}
+                            </div>
+                            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 26, color: T.paper, letterSpacing: "0.05em" }}>SCORE {debrief.score}/100</div>
+                          </div>
+                          <Stamp color={debrief.score >= 75 ? T.green : debrief.score >= 55 ? T.gold : T.orange}>GRADE {debrief.grade}</Stamp>
+                        </div>
+                        <p style={{ fontSize: 14.5, lineHeight: 1.6 }}><span style={{ color: T.gold, fontWeight: 600 }}>What happens: </span>{debrief.outcome}</p>
+                        <p style={{ fontSize: 14.5, lineHeight: 1.6 }}><span style={{ color: T.gold, fontWeight: 600 }}>Coaching: </span>{debrief.feedback}</p>
+                        <p style={{ fontSize: 14.5, lineHeight: 1.6 }}><span style={{ color: T.gold, fontWeight: 600 }}>Best practice: </span>{debrief.bestPractice}</p>
+                        {debrief.failedNow && (
+                          <div style={{ margin: "10px 0", padding: "10px 14px", border: `2px solid ${T.red}`, borderRadius: 3, fontFamily: "'Bebas Neue', sans-serif", fontSize: 20, letterSpacing: "0.1em", color: T.red }}>
+                            ✖ PROJECT FAILURE — {failReason}
+                          </div>
+                        )}
+                        <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+                          {!debrief.failedNow && <Btn onClick={next}>{stepIdx + 1 >= SCRIPT.length ? "FINAL REPORT →" : "NEXT EVENT →"}</Btn>}
+                          {debrief.failedNow && <Btn onClick={() => setScreen("final")}>POST-MORTEM REPORT</Btn>}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <div style={{ background: T.panel, border: `1px solid ${T.edge}`, borderRadius: 3, padding: 16 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
+                        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 20, color: T.paper, letterSpacing: "0.08em" }}>PROJECT HEALTH</div>
+                        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 26, color: health >= 65 ? T.green : health >= 45 ? T.gold : T.orange }}>{health}</div>
+                      </div>
+                      {METRIC_DEFS.map(([k, n]) => <Bar key={k} label={n} value={metrics[k]} delta={debrief?.deltas?.[k]} />)}
+                      {avgScore != null && (
+                        <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${T.edge}`, fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, letterSpacing: "0.1em", textTransform: "uppercase", color: T.gray }}>
+                          Avg score <span style={{ color: T.paper }}>{avgScore}</span> · Decisions <span style={{ color: T.paper }}>{log.length}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {data && (
+                      <div style={{ background: T.panel, border: `1px solid ${T.edge}`, borderRadius: 3, padding: 16, marginTop: 14 }}>
+                        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 17, color: T.paper, letterSpacing: "0.08em", marginBottom: 10 }}>COST & SCHEDULE DATA</div>
+                        <div style={{ fontSize: 12.5, lineHeight: 1.9 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: T.gray }}>CPI</span><span style={{ color: T.paper, fontWeight: 600 }}>{data.cpi}</span></div>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: T.gray }}>SPI</span><span style={{ color: T.paper, fontWeight: 600 }}>{data.spi}</span></div>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: T.gray }}>Projected overrun</span><span style={{ color: data.overrunM > 0 ? T.orange : T.green, fontWeight: 600 }}>{fmtM(data.overrunM)}</span></div>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: T.gray }}>Projected delay</span><span style={{ color: data.delayDays > 0 ? T.orange : T.green, fontWeight: 600 }}>{data.delayDays} days</span></div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div style={{ background: T.panel, border: `1px solid ${T.edge}`, borderRadius: 3, padding: 16, marginTop: 14 }}>
+                      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 17, color: T.paper, letterSpacing: "0.08em", marginBottom: 8 }}>PHASE TRACK</div>
+                      {PHASES.map((p, i) => (
+                        <div key={p} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", fontSize: 13, color: i === current.phaseIdx ? T.gold : T.gray, opacity: i > current.phaseIdx ? 0.5 : 1 }}>
+                          <span style={{ width: 8, height: 8, borderRadius: 8, background: i < current.phaseIdx ? T.green : i === current.phaseIdx ? T.gold : T.edge, flexShrink: 0 }} />
+                          {p}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {screen === "final" && (
+              <div style={{ padding: "26px 22px", maxWidth: 840, margin: "0 auto", width: "100%" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+                  <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 44, color: T.paper, letterSpacing: "0.05em", lineHeight: 1 }}>
+                    {failed ? <>PROJECT <span style={{ color: T.red }}>POST-MORTEM</span></> : <>FINAL PERFORMANCE <span style={{ color: T.gold }}>REVIEW</span></>}
+                  </div>
+                  <Stamp color={failed ? T.red : health >= params.successTarget ? T.green : T.gold}>
+                    {failed ? "FAILED" : health >= params.successTarget ? `WIN · ${health}/100` : `HEALTH ${health}/100`}
+                  </Stamp>
+                </div>
+                <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, letterSpacing: "0.15em", textTransform: "uppercase", color: T.gray, marginTop: 6 }}>
+                  {role} · {org} · {project?.name} · {log.length} decisions · avg {avgScore}
+                </div>
+                {failed && <div style={{ marginTop: 10, color: T.red, fontWeight: 600 }}>✖ {failReason}</div>}
+
+                <div style={{ marginTop: 20 }}>
+                  <div style={{ background: T.panel, border: `1px solid ${T.edge}`, borderLeft: `4px solid ${failed ? T.red : T.gold}`, borderRadius: 3, padding: "14px 18px", fontSize: 17, color: T.paper, fontWeight: 500 }}>
+                    "{finalReport.headline}"
+                  </div>
+                  <p style={{ fontSize: 15, lineHeight: 1.7, marginTop: 16 }}>{finalReport.summary}</p>
+                  <div className="csim-g2" style={{ marginTop: 10 }}>
+                    <div style={{ background: T.panel, border: `1px solid ${T.edge}`, borderRadius: 3, padding: 16 }}>
+                      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, color: T.green, letterSpacing: "0.08em", marginBottom: 6 }}>STRENGTHS</div>
+                      {finalReport.strengths.map((s, i) => <div key={i} style={{ fontSize: 14, padding: "3px 0" }}>▸ {s}</div>)}
+                    </div>
+                    <div style={{ background: T.panel, border: `1px solid ${T.edge}`, borderRadius: 3, padding: 16 }}>
+                      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, color: T.orange, letterSpacing: "0.08em", marginBottom: 6 }}>GROWTH AREAS</div>
+                      {finalReport.growthAreas.map((s, i) => <div key={i} style={{ fontSize: 14, padding: "3px 0" }}>▸ {s}</div>)}
+                    </div>
+                  </div>
+                  <p style={{ fontSize: 15, lineHeight: 1.7, marginTop: 16 }}>
+                    <span style={{ color: T.gold, fontWeight: 600 }}>Next: </span>{finalReport.recommendation}
+                  </p>
+                  <div style={{ marginTop: 8 }}>
+                    {METRIC_DEFS.map(([k, n]) => <Bar key={k} label={n} value={metrics[k]} />)}
+                  </div>
+                  <div style={{ marginTop: 22, display: "flex", gap: 12, paddingBottom: 16, flexWrap: "wrap" }}>
+                    <Btn onClick={reset}>RUN IT BACK →</Btn>
+                    <Btn kind="ghost" style={{ color: T.grayLight }} onClick={() => window.location.href = "../README.md"}>READ THE FULL CASE STUDY</Btn>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div style={{ marginTop: "auto", borderTop: `1px solid ${T.edge}`, padding: "8px 18px", display: "flex", justifyContent: "space-between", fontFamily: "'Barlow Condensed', sans-serif", fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase", color: T.gray }}>
+              <span>ConstructionSIM · Recruiter Demo Build</span>
+              <span>Live product's scenario engine: Claude (Anthropic)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<ConstructionSimDemo />);
+</script>
+</body>
+</html>

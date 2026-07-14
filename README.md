@@ -4,6 +4,8 @@
 
 > **Note:** Client and company names in this write-up have been fictionalized for confidentiality. The technical architecture, decisions, and outcomes described are accurate to the real engagement.
 
+**🎥 Demo:** [Try the interactive demo](demo/index.html) — a scripted sample playthrough (no live AI, no backend, no login) built from the real product's UI. *Español:* [Probar la demo interactiva](demo/index.html) — un recorrido de muestra guionado (sin IA en vivo, sin backend, sin login) construido con la UI real del producto.
+
 🇺🇸 [English](#english) · 🇪🇸 [Español](#español)
 
 ---
@@ -36,12 +38,37 @@ Acting as backend architect and sole engineer, I designed and shipped a complete
 - **Production deployment** — two containerized services (API + static frontend) deployed independently, with runtime environment-variable injection for per-deploy configuration (API base URL, auth provider keys) without rebuilding images.
 - **Frontend integration** — replaced the direct-to-Anthropic browser calls with authenticated calls to the new backend, and added a full login/invite-acceptance flow to the existing single-file frontend without a framework migration.
 
+### Architecture
+
+```
+Browser (React, vanilla — single static file, no build step)
+        │  Supabase magic-link session (JWT)
+        ▼
+FastAPI backend — 4 endpoints (/api/scenario, /api/evaluate, /api/recovery, /api/final)
+        │
+        ├── Local JWT verification (Supabase JWKS, cached 10 min — no per-request auth round-trip)
+        ├── Rate-limit guard — kill switch → session cap → hourly cap → org monthly cap
+        │       (cheapest, in-memory check first; DB checks only run if that passes)
+        ├── asyncpg pool → Postgres (orgs, users, sessions, decisions, reports, ai_call_log)
+        └── Anthropic client — cached system-prompt block + dynamic per-turn user message
+
+Deployment: two independent containerized services (API + static frontend) on Railway,
+each regenerating its runtime config from environment variables on container boot.
+```
+
 ### Key Technical Decisions
 
 - **Raw SQL over an ORM**: with only 5 tables and business-critical rate-limit checks that must be transactional, hand-written SQL queries were simpler to reason about under time pressure than ORM session/model overhead.
 - **JWKS-based JWT verification over trusting client-supplied tokens naively**: the backend verifies every request's identity locally and cheaply, with a cached key set, rather than calling out to the auth provider on every request.
 - **Server-side recomputation of derived game data** (cost/schedule performance metrics) rather than trusting client-submitted values, closing off an obvious tampering vector into the AI prompts.
 - **Config-at-container-start, not config-at-build-time**: the static frontend regenerates its runtime config from environment variables on every container boot, so the same Docker image can be promoted from a test deploy to production without a rebuild.
+- **Rate-limit checks called explicitly, not wired as a framework dependency**: the guard function is invoked directly at the top of each AI route instead of relying on the framework's dependency-injection system, because the session ID it needs lives inside the request body, not somewhere the framework can see before the handler runs.
+
+### Real Problems Solved During Deployment
+
+- **Silent connection failures under Supabase's pooled Postgres connection**: the pooler runs in transaction mode, which is incompatible with a database driver's default behavior of caching prepared statements across connections — reused connections would intermittently fail. Fixed by disabling the client-side statement cache for pooled connections, before it ever reached real traffic.
+- **Static frontend didn't load at the bare domain root**: the lightweight file server used to host the static frontend only auto-serves a file literally named `index.html`, but the app shipped as a single file named after the product. Fixed by generating an `index.html` copy at container boot, alongside the existing runtime-config injection.
+- **Auth-provider key rotation could have locked out every logged-in user at once**: instead of treating an unrecognized signing key as a hard failure, the JWT verifier forces one cache refresh and retries before rejecting a token — so a routine signing-key rotation on the auth provider's side degrades gracefully instead of causing a mass logout.
 
 ### Tech Stack
 
@@ -81,12 +108,37 @@ Como arquitecto de backend e ingeniero único del proyecto, diseñé y entregué
 - **Despliegue de producción** — dos servicios containerizados (API + frontend estático) desplegados de forma independiente, con inyección de variables de entorno en tiempo de ejecución para configuración por despliegue (URL base de la API, llaves del proveedor de auth) sin reconstruir las imágenes.
 - **Integración de frontend** — reemplacé las llamadas directas del navegador a Anthropic por llamadas autenticadas al nuevo backend, y agregué un flujo completo de login/aceptación de invitación al frontend existente de un solo archivo, sin migrar a ningún framework.
 
+### Arquitectura
+
+```
+Navegador (React, vanilla — un solo archivo estático, sin build step)
+        │  Sesión magic-link de Supabase (JWT)
+        ▼
+Backend FastAPI — 4 endpoints (/api/scenario, /api/evaluate, /api/recovery, /api/final)
+        │
+        ├── Verificación local de JWT (JWKS de Supabase, cacheado 10 min — sin ida y vuelta por request)
+        ├── Guardia de rate-limit — kill switch → tope de sesión → tope por hora → tope mensual por org
+        │       (primero la validación en memoria, más barata; las de base de datos solo si esa pasa)
+        ├── Pool de asyncpg → Postgres (orgs, usuarios, sesiones, decisiones, reportes, ai_call_log)
+        └── Cliente de Anthropic — bloque de sistema cacheado + mensaje de usuario dinámico por turno
+
+Despliegue: dos servicios containerizados independientes (API + frontend estático) en Railway,
+cada uno regenerando su configuración de tiempo de ejecución desde variables de entorno al arrancar.
+```
+
 ### Decisiones Técnicas Clave
 
 - **SQL directo en vez de un ORM**: con solo 5 tablas y validaciones de límite de uso críticas para el negocio que deben ser transaccionales, las consultas SQL escritas a mano fueron más simples de razonar bajo presión de tiempo que la sobrecarga de sesiones/modelos de un ORM.
 - **Verificación de JWT vía JWKS en vez de confiar ingenuamente en tokens enviados por el cliente**: el backend verifica la identidad de cada request localmente y de forma económica, con un conjunto de llaves cacheado, en vez de llamar al proveedor de auth en cada request.
 - **Recálculo del lado del servidor de datos derivados del juego** (métricas de desempeño de costo/cronograma) en vez de confiar en valores enviados por el cliente, cerrando un vector obvio de manipulación hacia los prompts de IA.
 - **Configuración al arrancar el contenedor, no al construir la imagen**: el frontend estático regenera su configuración de tiempo de ejecución desde variables de entorno en cada arranque del contenedor, para que la misma imagen Docker pueda promoverse de un despliegue de prueba a producción sin reconstruirla.
+- **Las validaciones de rate-limit se llaman de forma explícita, no como dependencia del framework**: la función de guardia se invoca directamente al inicio de cada ruta de IA en vez de depender del sistema de inyección de dependencias del framework, porque el ID de sesión que necesita vive dentro del cuerpo del request, no en un lugar que el framework pueda ver antes de que corra el handler.
+
+### Problemas Reales Resueltos Durante el Despliegue
+
+- **Fallas silenciosas de conexión con el Postgres pooled de Supabase**: el pooler corre en modo transacción, lo cual es incompatible con el comportamiento por defecto de un driver de base de datos que cachea prepared statements entre conexiones — las conexiones reutilizadas fallaban de forma intermitente. Se resolvió desactivando el cache de statements del lado del cliente para conexiones pooled, antes de que llegara a tráfico real.
+- **El frontend estático no cargaba en la raíz del dominio**: el servidor de archivos liviano usado para alojar el frontend estático solo sirve automáticamente un archivo llamado literalmente `index.html`, pero la app se entregaba como un solo archivo con el nombre del producto. Se resolvió generando una copia como `index.html` al arrancar el contenedor, junto a la inyección de configuración ya existente.
+- **La rotación de llaves del proveedor de auth podía dejar afuera a todos los usuarios logueados a la vez**: en vez de tratar una llave de firma no reconocida como una falla dura, el verificador de JWT fuerza un refresh del cache y reintenta antes de rechazar un token — así una rotación de rutina en el proveedor de auth se degrada de forma controlada en vez de causar un logout masivo.
 
 ### Stack Tecnológico
 
