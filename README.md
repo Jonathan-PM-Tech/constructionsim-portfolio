@@ -4,7 +4,7 @@
 
 > **Note:** Client and company names in this write-up have been fictionalized for confidentiality. The technical architecture, decisions, and outcomes described are accurate to the real engagement.
 
-**🎥 Demo:** [Try the interactive demo](demo/index.html) — a scripted sample playthrough (no live AI, no backend, no login) built from the real product's UI. *Español:* [Probar la demo interactiva](demo/index.html) — un recorrido de muestra guionado (sin IA en vivo, sin backend, sin login) construido con la UI real del producto.
+**🎥 Demo:** [Try the interactive demo](https://jonathan-pm-tech.github.io/constructionsim-portfolio/demo/) — a scripted sample playthrough (no live AI, no backend, no login) built from the real product's UI. *Español:* [Probar la demo interactiva](https://jonathan-pm-tech.github.io/constructionsim-portfolio/demo/) — un recorrido de muestra guionado (sin IA en vivo, sin backend, sin login) construido con la UI real del producto.
 
 🇺🇸 [English](#english) · 🇪🇸 [Español](#español)
 
